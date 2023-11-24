@@ -6,13 +6,13 @@ import matplotlib.pyplot as plt
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Running with {device}")
 
-dataset_folder = "./dataset/"
-batch_size = 64
-block_size = 95
+dataset_folder = "./dataset_1024_512_100000_1_1/train/"
+batch_size = 1
+block_size = 1024 + 512
 vocab_size = 256
 epochs = 100
 lr = 3e-4
-nembed = 384
+nembed = 512
 n_head = 6
 n_layer = 6
 dropout = 0.2
@@ -25,9 +25,9 @@ class DatasetLoader(torch.utils.data.Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-        item = numpy.load(self.files[idx])
-        src = item[:-1]
-        trt = item[1:]
+        item = torch.tensor(numpy.load(self.files[idx], allow_pickle=True).item()['frame'])
+        src = item[:-1].long()
+        trt = item[1:].long()
         return src, trt
 
 class Head(torch.nn.Module):
@@ -41,19 +41,15 @@ class Head(torch.nn.Module):
         self.dropout = torch.nn.Dropout(dropout)
 
     def forward(self, x):
-        # input of size (batch, time-step, channels)
-        # output of size (batch, time-step, head size)
         B,T,C = x.shape
-        k = self.key(x)   # (B,T,hs)
-        q = self.query(x) # (B,T,hs)
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = torch.nn.functional.softmax(wei, dim=-1) # (B, T, T)
+        k = self.key(x)
+        q = self.query(x) 
+        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) 
+        wei = torch.nn.functional.softmax(wei, dim=-1) 
         wei = self.dropout(wei)
-        # perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,hs)
-        out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
+        v = self.value(x) 
+        out = wei @ v 
         return out
 
 class MultiHeadAttention(torch.nn.Module):
@@ -156,6 +152,7 @@ if __name__ == "__main__":
     # train
     for epoch in range(epochs):
         for idx, batch in enumerate(dataloader):
+            model.train()
             optimizer.zero_grad(set_to_none=True)
             src = batch[0].to(device)
             trt = batch[1].to(device)
@@ -163,9 +160,13 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
             
-            if idx % 100 == 0:
-                print(f"{idx}::{epoch}::{loss.item()}")
-                wave = model.generate(src[0,:].unsqueeze(0), 1000)[0].tolist()
+            if idx % 10 == 0:
+                model.eval()
+                print(f"{idx} / {len(dataloader)}::{epoch}::{loss.item()}")
+                wave = model.generate(src[0,0:1024].unsqueeze(0), 512)[0].tolist()
                 plt.plot(wave)
+                plt.plot(src[0,0:1024 + 512].tolist(), alpha=0.5)
+                plt.axvline(128)
                 plt.savefig("latest.png")
                 plt.close()
+                torch.save(model, "latest.pt")
